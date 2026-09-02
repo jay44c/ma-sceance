@@ -123,6 +123,7 @@
     border-radius: 10px; padding: 11px 8px; font-size: 13px; font-weight: 700; cursor:pointer;
     display:flex; align-items:center; justify-content:center; gap:6px; }
   .tool-btn:active{ transform: scale(0.98); }
+  .tool-btn.workout-active{ border-color: var(--teal); color: var(--teal); }
   .tool-btn.timer{ color: var(--band); border-color: var(--band-dim); }
 
   /* Free timer overlay */
@@ -146,6 +147,8 @@
 </header>
 
 <div class="wrap">
+  <button class="tool-btn timer" id="startWorkoutBtn" style="width:100%; margin:12px 0 10px;">▶ Commencer la séance</button>
+
   <div class="toolbar">
     <button class="tool-btn timer" id="freeTimerBtn">⏲ Décompte libre</button>
     <button class="tool-btn" id="clearProgressBtn">↺ Réinitialiser les séries</button>
@@ -329,11 +332,18 @@
           const wasChecked = !!exo.checked[s];
           exo.checked[s] = !wasChecked;
           render();
+
           if (!wasChecked){
-            // just checked a set -> launch rest, unless it's the very last set of last exercise
-            const isLastSetOfExo = (s === exo.sets - 1);
-            const stillMoreSets = exo.checked.filter(Boolean).length < exo.sets;
-            startRest(exo, i);
+            // Le Wake Lock est normalement déjà actif depuis
+            // "Commencer la séance".
+            const allFinished = doneSets() === totalSets();
+
+            if (!allFinished){
+              startRest(exo, i);
+            } else {
+              // Dernière série : fin de séance.
+              endWorkout();
+            }
           }
         });
         pill.appendChild(dot);
@@ -393,7 +403,10 @@
       const startBtn = document.createElement('button');
       startBtn.className = 'start-rest';
       startBtn.textContent = '⏱ Lancer le repos (' + exo.rest + ' sec)';
-      startBtn.addEventListener('click', () => startRest(exo, i));
+      startBtn.addEventListener('click', async () => {
+        if (!workoutActive) await startWorkout();
+        startRest(exo, i);
+      });
       card.appendChild(startBtn);
 
       exoList.appendChild(card);
@@ -424,23 +437,33 @@
   function startRest(exo, i){
     activeExoIndex = i;
     clearInterval(timerInterval);
+
     timeLeft = exo.rest;
     totalTime = exo.rest;
+
     restExoName.textContent = exo.name;
     overlay.classList.add('show');
     updateRing();
+
+    // Utilise une échéance réelle : iOS peut ralentir setInterval.
+    const endTime = Date.now() + (totalTime * 1000);
+
     timerInterval = setInterval(() => {
-      timeLeft--;
+      timeLeft = Math.max(0, Math.ceil((endTime - Date.now()) / 1000));
+
       if (timeLeft <= 0){
         clearInterval(timerInterval);
         timeLeft = 0;
         updateRing();
+
         if (navigator.vibrate) navigator.vibrate([200,100,200]);
+
         setTimeout(closeOverlay, 500);
         return;
       }
+
       updateRing();
-    }, 1000);
+    }, 250);
   }
 
   function updateRing(){
@@ -494,9 +517,10 @@
     freeOverlay.classList.add('show');
   });
 
-  document.getElementById('closeFreeSetup').addEventListener('click', () => {
+  document.getElementById('closeFreeSetup').addEventListener('click', async () => {
     clearInterval(freeInterval);
     freeOverlay.classList.remove('show');
+    if (!workoutActive) await releaseWakeLock();
   });
 
   document.querySelectorAll('.quick-chip').forEach(chip => {
@@ -507,11 +531,17 @@
     });
   });
 
-  document.getElementById('startFreeBtn').addEventListener('click', () => {
+  document.getElementById('startFreeBtn').addEventListener('click', async () => {
     const mins = parseInt(freeMinInput.value, 10) || 0;
     const secs = parseInt(freeSecInput.value, 10) || 0;
     const total = mins*60 + secs;
     if (total <= 0) return;
+
+    // Le décompte libre est lui aussi lancé par une interaction utilisateur.
+    // S'il n'y a pas de séance en cours, on maintient l'écran pendant ce décompte.
+    const freeOwnsWakeLock = !workoutActive;
+    if (freeOwnsWakeLock) await requestWakeLock();
+
     freeTimeLeft = total;
     freeTotalTime = total;
     freePaused = false;
@@ -523,21 +553,34 @@
 
   function startFreeInterval(){
     clearInterval(freeInterval);
+
+    // Si le timer est lancé/repris, on calcule à partir de l'heure réelle.
+    let endTime = Date.now() + (freeTimeLeft * 1000);
+
     freeInterval = setInterval(() => {
-      if (freePaused) return;
-      freeTimeLeft--;
+      if (freePaused) {
+        endTime = Date.now() + (freeTimeLeft * 1000);
+        return;
+      }
+
+      freeTimeLeft = Math.max(0, Math.ceil((endTime - Date.now()) / 1000));
+
       if (freeTimeLeft <= 0){
         clearInterval(freeInterval);
         freeTimeLeft = 0;
         updateFreeRing();
+
         if (navigator.vibrate) navigator.vibrate([200,100,200,100,200]);
-        setTimeout(() => {
+
+        setTimeout(async () => {
           freeOverlay.classList.remove('show');
+          if (!workoutActive) await releaseWakeLock();
         }, 700);
         return;
       }
+
       updateFreeRing();
-    }, 1000);
+    }, 250);
   }
 
   function updateFreeRing(){
@@ -551,46 +594,122 @@
   document.getElementById('freePauseBtn').addEventListener('click', (e) => {
     freePaused = !freePaused;
     e.target.textContent = freePaused ? 'Reprendre' : 'Pause';
+
+    // Redémarre l'intervalle afin que le timestamp soit recalculé proprement.
+    if (!freePaused) startFreeInterval();
   });
 
-  document.getElementById('freeStopBtn').addEventListener('click', () => {
+  document.getElementById('freeStopBtn').addEventListener('click', async () => {
     clearInterval(freeInterval);
     freeOverlay.classList.remove('show');
+    if (!workoutActive) await releaseWakeLock();
   });
 
-  // ---- Wake Lock : empêcher la mise en veille de l'écran ----
+  // ---- Wake Lock : actif pendant toute la séance ----
   let wakeLock = null;
+  let workoutActive = false;
+
   const wakeDot = document.getElementById('wakeDot');
   const wakeLabel = document.getElementById('wakeLabel');
+  const startWorkoutBtn = document.getElementById('startWorkoutBtn');
+
   const wakeSupported = 'wakeLock' in navigator;
 
   async function requestWakeLock(){
     if (!wakeSupported) {
-      wakeLabel.textContent = 'Écran : non supporté sur ce navigateur';
-      return;
+      wakeLabel.textContent = 'Écran : Wake Lock non disponible';
+      return false;
     }
-    try{
+
+    if (wakeLock && !wakeLock.released) {
+      return true;
+    }
+
+    try {
       wakeLock = await navigator.wakeLock.request('screen');
+
       wakeDot.classList.add('active');
       wakeLabel.textContent = 'Écran : reste allumé pendant la séance';
+
       wakeLock.addEventListener('release', () => {
         wakeDot.classList.remove('active');
-        wakeLabel.textContent = 'Écran : veille normale';
+        wakeLabel.textContent = workoutActive
+          ? 'Écran : réactivation en attente'
+          : 'Écran : veille normale';
+
+        wakeLock = null;
       });
-    }catch(err){
+
+      return true;
+    } catch(err) {
+      console.log('Wake Lock refusé :', err);
       wakeDot.classList.remove('active');
       wakeLabel.textContent = 'Écran : veille normale';
+      wakeLock = null;
+      return false;
     }
   }
 
-  // Redemander le wake lock si l'onglet redevient visible (iOS le libère en arrière-plan)
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && wakeSupported) {
-      requestWakeLock();
+  async function releaseWakeLock(){
+    if (wakeLock) {
+      try {
+        await wakeLock.release();
+      } catch(err) {
+        console.log('Erreur libération Wake Lock :', err);
+      }
+      wakeLock = null;
+    }
+
+    wakeDot.classList.remove('active');
+    wakeLabel.textContent = 'Écran : veille normale';
+  }
+
+  async function startWorkout(){
+    if (workoutActive) return;
+
+    // IMPORTANT : cette fonction est appelée directement par le clic
+    // utilisateur, ce qui est nécessaire sur iPhone/Safari.
+    workoutActive = true;
+
+    const ok = await requestWakeLock();
+
+    if (ok) {
+      startWorkoutBtn.textContent = '🔒 Séance en cours · écran maintenu';
+      startWorkoutBtn.classList.add('workout-active');
+    } else {
+      startWorkoutBtn.textContent = '▶ Séance en cours · Wake Lock indisponible';
+      startWorkoutBtn.classList.remove('workout-active');
+    }
+
+    render();
+  }
+
+  async function endWorkout(){
+    workoutActive = false;
+    await releaseWakeLock();
+
+    startWorkoutBtn.textContent = '▶ Commencer la séance';
+    startWorkoutBtn.classList.remove('workout-active');
+
+    render();
+  }
+
+  startWorkoutBtn.addEventListener('click', startWorkout);
+
+  // iOS peut libérer le Wake Lock quand Safari passe en arrière-plan.
+  // On le redemande lorsque la page redevient visible.
+  document.addEventListener('visibilitychange', async () => {
+    if (document.visibilityState === 'visible' && workoutActive) {
+      await requestWakeLock();
+
+      if (wakeLock) {
+        startWorkoutBtn.textContent = '🔒 Séance en cours · écran maintenu';
+        startWorkoutBtn.classList.add('workout-active');
+      }
     }
   });
 
-  requestWakeLock();
+  // ---- Fin Wake Lock ----
 
   render();
 })();
