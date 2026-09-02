@@ -102,8 +102,21 @@
   .reset-link{ display:block; text-align:center; margin-top: 10px; color: var(--text-dim); font-size: 12.5px;
     text-decoration: underline; cursor:pointer; }
 
-  .save-indicator{ font-size: 11px; color: var(--text-dim); display:flex; align-items:center; gap:5px; }
+  .video-row{ display:flex; align-items:center; gap:8px; margin-top: 10px; }
+  .video-row input{ flex:1; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px;
+    color: var(--text); font-size: 12.5px; padding: 7px 9px; }
+  .video-row input:focus{ outline: none; border-color: var(--band); }
+  .video-row input::placeholder{ color: var(--text-dim); }
+  .video-link{ display:flex; align-items:center; gap: 5px; background: var(--band-dim); color: var(--text);
+    border: none; border-radius: 8px; padding: 7px 10px; font-size: 12.5px; font-weight: 700;
+    text-decoration:none; white-space:nowrap; flex-shrink:0; }
+  .video-link:active{ opacity: .8; }
+
+  .save-indicator{ font-size: 11px; color: var(--text-dim); display:flex; align-items:center; gap:5px; flex-wrap: wrap; }
   .save-dot{ width:6px; height:6px; border-radius:50%; background: var(--teal); }
+  .wake-dot{ width:6px; height:6px; border-radius:50%; background: var(--line); }
+  .wake-dot.active{ background: var(--band); }
+  .wake-sep{ color: var(--line); margin: 0 2px; }
 
   .toolbar{ display:flex; gap: 10px; margin: 12px 0 4px; }
   .tool-btn{ flex:1; background: var(--panel); border: 1px solid var(--line); color: var(--text);
@@ -144,6 +157,8 @@
   </div>
   <div class="save-indicator" id="saveIndicator" style="margin-bottom:10px;">
     <span class="save-dot"></span> Sauvegardé automatiquement sur cet appareil
+    <span class="wake-sep">·</span>
+    <span class="wake-dot" id="wakeDot"></span> <span id="wakeLabel">Écran : veille normale</span>
   </div>
 
   <div id="exoList"></div>
@@ -211,13 +226,13 @@
 <script>
 (function(){
   const defaultExercises = [
-    { name: "Face pull (dos / épaules arrière)", sets: 3, reps: 14, rest: 50, checked: [] },
-    { name: "Développé pectoral (chest press)", sets: 3, reps: 14, rest: 50, checked: [] },
-    { name: "Élévations latérales (épaules)", sets: 3, reps: 14, rest: 50, checked: [] },
-    { name: "Curl biceps", sets: 3, reps: 14, rest: 45, checked: [] },
-    { name: "Extension triceps", sets: 3, reps: 14, rest: 45, checked: [] },
-    { name: "Rowing debout (supination)", sets: 3, reps: 14, rest: 50, checked: [] },
-    { name: "Développé militaire (assis)", sets: 3, reps: 12, rest: 60, checked: [] },
+    { name: "Face pull (dos / épaules arrière)", sets: 3, reps: 14, rest: 50, checked: [], video: "" },
+    { name: "Développé pectoral (chest press)", sets: 3, reps: 14, rest: 50, checked: [], video: "" },
+    { name: "Élévations latérales (épaules)", sets: 3, reps: 14, rest: 50, checked: [], video: "" },
+    { name: "Curl biceps", sets: 3, reps: 14, rest: 45, checked: [], video: "" },
+    { name: "Extension triceps", sets: 3, reps: 14, rest: 45, checked: [], video: "" },
+    { name: "Rowing debout (supination)", sets: 3, reps: 14, rest: 50, checked: [], video: "" },
+    { name: "Développé militaire (assis)", sets: 3, reps: 12, rest: 60, checked: [], video: "" },
   ];
 
   const STORAGE_KEY = 'seance-elastique-data-v1';
@@ -227,7 +242,11 @@
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return JSON.parse(JSON.stringify(defaultExercises));
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length) return parsed;
+      if (Array.isArray(parsed) && parsed.length) {
+        // compatibilité avec les sauvegardes créées avant l'ajout du champ vidéo
+        parsed.forEach(e => { if (typeof e.video === 'undefined') e.video = ''; });
+        return parsed;
+      }
       return JSON.parse(JSON.stringify(defaultExercises));
     }catch(e){
       return JSON.parse(JSON.stringify(defaultExercises));
@@ -345,6 +364,31 @@
         });
       });
 
+      // lien vidéo
+      const videoRow = document.createElement('div');
+      videoRow.className = 'video-row';
+
+      const videoInput = document.createElement('input');
+      videoInput.type = 'url';
+      videoInput.placeholder = 'Coller un lien vidéo (YouTube, etc.)';
+      videoInput.value = exo.video || '';
+      videoInput.addEventListener('change', () => {
+        exo.video = videoInput.value.trim();
+        render();
+      });
+      videoRow.appendChild(videoInput);
+
+      if (exo.video){
+        const link = document.createElement('a');
+        link.className = 'video-link';
+        link.href = exo.video;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.textContent = '▶ Voir';
+        videoRow.appendChild(link);
+      }
+      card.appendChild(videoRow);
+
       // manual rest launch
       const startBtn = document.createElement('button');
       startBtn.className = 'start-rest';
@@ -422,7 +466,7 @@
   });
 
   document.getElementById('addExoBtn').addEventListener('click', () => {
-    exercises.push({ name: 'Nouvel exercice', sets: 3, reps: 12, rest: 45, checked: [] });
+    exercises.push({ name: 'Nouvel exercice', sets: 3, reps: 12, rest: 45, checked: [], video: '' });
     render();
   });
 
@@ -513,6 +557,40 @@
     clearInterval(freeInterval);
     freeOverlay.classList.remove('show');
   });
+
+  // ---- Wake Lock : empêcher la mise en veille de l'écran ----
+  let wakeLock = null;
+  const wakeDot = document.getElementById('wakeDot');
+  const wakeLabel = document.getElementById('wakeLabel');
+  const wakeSupported = 'wakeLock' in navigator;
+
+  async function requestWakeLock(){
+    if (!wakeSupported) {
+      wakeLabel.textContent = 'Écran : non supporté sur ce navigateur';
+      return;
+    }
+    try{
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeDot.classList.add('active');
+      wakeLabel.textContent = 'Écran : reste allumé pendant la séance';
+      wakeLock.addEventListener('release', () => {
+        wakeDot.classList.remove('active');
+        wakeLabel.textContent = 'Écran : veille normale';
+      });
+    }catch(err){
+      wakeDot.classList.remove('active');
+      wakeLabel.textContent = 'Écran : veille normale';
+    }
+  }
+
+  // Redemander le wake lock si l'onglet redevient visible (iOS le libère en arrière-plan)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && wakeSupported) {
+      requestWakeLock();
+    }
+  });
+
+  requestWakeLock();
 
   render();
 })();
