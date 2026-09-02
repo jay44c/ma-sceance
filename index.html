@@ -141,7 +141,8 @@
 <body>
 
 <header class="wrap">
-    <h1>Ma séance élastique</h1>
+  <div class="eyebrow">Haut du corps · Débutant</div>
+  <h1>Ma séance élastique</h1>
   <div class="sub">Touche un rond pour valider une série. Le repos se lance automatiquement.</div>
 </header>
 
@@ -232,13 +233,10 @@
   let audioCtx = null;
 
   function playEndSignal(){
-    // Vibration (iPhone peut la limiter selon Safari / mode silencieux / permissions)
     if (navigator.vibrate) {
       navigator.vibrate([180, 80, 180, 80, 350]);
     }
 
-    // Petit signal sonore généré sans fichier audio externe.
-    // Le contexte audio est créé/repris au moment d'une interaction utilisateur.
     try {
       const AudioContext = window.AudioContext || window.webkitAudioContext;
       if (!AudioContext) return;
@@ -273,13 +271,13 @@
   }
 
   const defaultExercises = [
-    { name: "Face pull (dos / épaules arrière)", sets: 3, reps: 14, rest: 50, checked: [], video: "" },
-    { name: "Développé pectoral (chest press)", sets: 3, reps: 14, rest: 50, checked: [], video: "" },
-    { name: "Élévations latérales (épaules)", sets: 3, reps: 14, rest: 50, checked: [], video: "" },
-    { name: "Curl biceps", sets: 3, reps: 14, rest: 45, checked: [], video: "" },
-    { name: "Extension triceps", sets: 3, reps: 14, rest: 45, checked: [], video: "" },
-    { name: "Rowing debout (supination)", sets: 3, reps: 14, rest: 50, checked: [], video: "" },
-    { name: "Développé militaire (assis)", sets: 3, reps: 12, rest: 60, checked: [], video: "" },
+    { name: "Face pull (dos / épaules arrière)", sets: 3, reps: 14, rest: 50, weight: 15, checked: [], video: "" },
+    { name: "Développé pectoral (chest press)", sets: 3, reps: 14, rest: 50, weight: 10, checked: [], video: "" },
+    { name: "Élévations latérales (épaules)", sets: 3, reps: 14, rest: 50, weight: 10, checked: [], video: "" },
+    { name: "Curl biceps", sets: 3, reps: 14, rest: 45, weight: 15, checked: [], video: "" },
+    { name: "Extension triceps", sets: 3, reps: 14, rest: 45, weight: 10, checked: [], video: "" },
+    { name: "Rowing debout (supination)", sets: 3, reps: 14, rest: 50, weight: 15, checked: [], video: "" },
+    { name: "Développé militaire (assis)", sets: 3, reps: 12, rest: 60, weight: 10, checked: [], video: "" },
   ];
 
   const STORAGE_KEY = 'seance-elastique-data-v1';
@@ -290,8 +288,11 @@
       if (!raw) return JSON.parse(JSON.stringify(defaultExercises));
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length) {
-        // compatibilité avec les sauvegardes créées avant l'ajout du champ vidéo
-        parsed.forEach(e => { if (typeof e.video === 'undefined') e.video = ''; });
+        // compatibilité avec les sauvegardes créées avant l'ajout des champs vidéo / poids
+        parsed.forEach(e => {
+          if (typeof e.video === 'undefined') e.video = '';
+          if (typeof e.weight === 'undefined') e.weight = 0;
+        });
         return parsed;
       }
       return JSON.parse(JSON.stringify(defaultExercises));
@@ -346,7 +347,9 @@
       name.addEventListener('blur', () => { exo.name = name.textContent.trim() || 'Exercice'; });
       const meta = document.createElement('div');
       meta.className = 'exo-meta';
-      meta.textContent = exo.sets + ' séries × ' + exo.reps + ' reps · repos ' + exo.rest + ' sec';
+      meta.textContent = exo.sets + ' séries × ' + exo.reps + ' reps'
+        + (exo.weight ? ' · ' + exo.weight + ' kg' : '')
+        + ' · repos ' + exo.rest + ' sec';
       nameWrap.appendChild(name);
       nameWrap.appendChild(meta);
 
@@ -378,14 +381,11 @@
           render();
 
           if (!wasChecked){
-            // Le Wake Lock est normalement déjà actif depuis
-            // "Commencer la séance".
             const allFinished = doneSets() === totalSets();
 
             if (!allFinished){
               startRest(exo, i);
             } else {
-              // Dernière série : fin de séance.
               endWorkout();
             }
           }
@@ -400,13 +400,14 @@
       params.className = 'params';
       params.innerHTML = paramHTML('Séries', exo.sets, 'sets') +
                           paramHTML('Reps', exo.reps, 'reps') +
+                          paramHTML('Poids (kg)', exo.weight || 0, 'weight') +
                           paramHTML('Repos (s)', exo.rest, 'rest');
       card.appendChild(params);
 
       params.querySelectorAll('input').forEach(input => {
         input.addEventListener('change', () => {
           const field = input.dataset.field;
-          let val = parseInt(input.value, 10);
+          let val = parseFloat(input.value);
           if (isNaN(val) || val < 0) val = 0;
           exo[field] = val;
           if (field === 'sets'){
@@ -470,7 +471,8 @@
   }
 
   function paramHTML(label, value, field){
-    return '<div class="param"><label>'+label+'</label><input type="number" inputmode="numeric" data-field="'+field+'" value="'+value+'"></div>';
+    const step = field === 'weight' ? ' step="0.5"' : '';
+    return '<div class="param"><label>'+label+'</label><input type="number" inputmode="decimal"'+step+' data-field="'+field+'" value="'+value+'"></div>';
   }
 
   function resetAll(){
@@ -489,7 +491,6 @@
     overlay.classList.add('show');
     updateRing();
 
-    // Utilise une échéance réelle : iOS peut ralentir setInterval.
     const endTime = Date.now() + (totalTime * 1000);
 
     timerInterval = setInterval(() => {
@@ -533,7 +534,7 @@
   });
 
   document.getElementById('addExoBtn').addEventListener('click', () => {
-    exercises.push({ name: 'Nouvel exercice', sets: 3, reps: 12, rest: 45, checked: [], video: '' });
+    exercises.push({ name: 'Nouvel exercice', sets: 3, reps: 12, rest: 45, weight: 0, checked: [], video: '' });
     render();
   });
 
@@ -581,8 +582,6 @@
     const total = mins*60 + secs;
     if (total <= 0) return;
 
-    // Le décompte libre est lui aussi lancé par une interaction utilisateur.
-    // S'il n'y a pas de séance en cours, on maintient l'écran pendant ce décompte.
     const freeOwnsWakeLock = !workoutActive;
     if (freeOwnsWakeLock) await requestWakeLock();
 
@@ -608,7 +607,6 @@
   function startFreeInterval(){
     clearInterval(freeInterval);
 
-    // Si le timer est lancé/repris, on calcule à partir de l'heure réelle.
     let endTime = Date.now() + (freeTimeLeft * 1000);
 
     freeInterval = setInterval(() => {
@@ -649,7 +647,6 @@
     freePaused = !freePaused;
     e.target.textContent = freePaused ? 'Reprendre' : 'Pause';
 
-    // Redémarre l'intervalle afin que le timestamp soit recalculé proprement.
     if (!freePaused) startFreeInterval();
   });
 
@@ -721,8 +718,6 @@
   async function startWorkout(){
     if (workoutActive) return;
 
-    // Débloque l'audio au même moment que le Wake Lock,
-    // dans le geste utilisateur, ce qui est nécessaire sur iPhone/Safari.
     try {
       const AudioContext = window.AudioContext || window.webkitAudioContext;
       if (AudioContext) {
@@ -733,8 +728,6 @@
       console.log('AudioContext indisponible :', err);
     }
 
-    // IMPORTANT : cette fonction est appelée directement par le clic
-    // utilisateur, ce qui est nécessaire sur iPhone/Safari.
     workoutActive = true;
 
     const ok = await requestWakeLock();
@@ -762,8 +755,6 @@
 
   startWorkoutBtn.addEventListener('click', startWorkout);
 
-  // iOS peut libérer le Wake Lock quand Safari passe en arrière-plan.
-  // On le redemande lorsque la page redevient visible.
   document.addEventListener('visibilitychange', async () => {
     if (document.visibilityState === 'visible' && workoutActive) {
       await requestWakeLock();
@@ -774,8 +765,6 @@
       }
     }
   });
-
-  // ---- Fin Wake Lock ----
 
   render();
 })();
