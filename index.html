@@ -228,6 +228,51 @@
 
 <script>
 (function(){
+
+  // ---- Signal sonore + vibration en fin de décompte ----
+  let audioCtx = null;
+
+  function playEndSignal(){
+    // Vibration (iPhone peut la limiter selon Safari / mode silencieux / permissions)
+    if (navigator.vibrate) {
+      navigator.vibrate([180, 80, 180, 80, 350]);
+    }
+
+    // Petit signal sonore généré sans fichier audio externe.
+    // Le contexte audio est créé/repris au moment d'une interaction utilisateur.
+    try {
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContext) return;
+
+      if (!audioCtx) audioCtx = new AudioContext();
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+
+      const now = audioCtx.currentTime;
+
+      [0, 0.22, 0.44].forEach((offset, index) => {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+
+        osc.type = 'sine';
+        osc.frequency.value = index === 2 ? 1100 : 900;
+
+        gain.gain.setValueAtTime(0.0001, now + offset);
+        gain.gain.exponentialRampToValueAtTime(0.22, now + offset + 0.015);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + offset + 0.16);
+
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+
+        osc.start(now + offset);
+        osc.stop(now + offset + 0.18);
+      });
+    } catch (err) {
+      console.log('Son indisponible :', err);
+    }
+  }
+
   const defaultExercises = [
     { name: "Face pull (dos / épaules arrière)", sets: 3, reps: 14, rest: 50, checked: [], video: "" },
     { name: "Développé pectoral (chest press)", sets: 3, reps: 14, rest: 50, checked: [], video: "" },
@@ -456,7 +501,7 @@
         timeLeft = 0;
         updateRing();
 
-        if (navigator.vibrate) navigator.vibrate([200,100,200]);
+        playEndSignal();
 
         setTimeout(closeOverlay, 500);
         return;
@@ -542,6 +587,16 @@
     const freeOwnsWakeLock = !workoutActive;
     if (freeOwnsWakeLock) await requestWakeLock();
 
+    try {
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      if (AudioContext) {
+        if (!audioCtx) audioCtx = new AudioContext();
+        if (audioCtx.state === 'suspended') await audioCtx.resume();
+      }
+    } catch (err) {
+      console.log('AudioContext indisponible :', err);
+    }
+
     freeTimeLeft = total;
     freeTotalTime = total;
     freePaused = false;
@@ -570,7 +625,7 @@
         freeTimeLeft = 0;
         updateFreeRing();
 
-        if (navigator.vibrate) navigator.vibrate([200,100,200,100,200]);
+        playEndSignal();
 
         setTimeout(async () => {
           freeOverlay.classList.remove('show');
@@ -666,6 +721,18 @@
 
   async function startWorkout(){
     if (workoutActive) return;
+
+    // Débloque l'audio au même moment que le Wake Lock,
+    // dans le geste utilisateur, ce qui est nécessaire sur iPhone/Safari.
+    try {
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      if (AudioContext) {
+        if (!audioCtx) audioCtx = new AudioContext();
+        if (audioCtx.state === 'suspended') await audioCtx.resume();
+      }
+    } catch (err) {
+      console.log('AudioContext indisponible :', err);
+    }
 
     // IMPORTANT : cette fonction est appelée directement par le clic
     // utilisateur, ce qui est nécessaire sur iPhone/Safari.
